@@ -24,6 +24,7 @@ import queue
 
 load_dotenv()
 
+# --- In-memory chat history storage ---
 store = {}
 
 def get_session_history(session_id: str) -> BaseChatMessageHistory:
@@ -31,6 +32,7 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
         store[session_id] = ChatMessageHistory()
     return store[session_id]
 
+# --- LLM Configuration ---
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
     Talk like EMO from living AI
@@ -45,6 +47,7 @@ prompt = ChatPromptTemplate.from_messages([
 
 llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", api_key=os.getenv("GEMINI_API_KEY"))
 
+# Setup agent
 tools = []
 agent = create_tool_calling_agent(llm=llm, prompt=prompt, tools=tools)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
@@ -55,6 +58,7 @@ agent_with_chat_history = RunnableWithMessageHistory(
     history_messages_key="chat_history",
 )
 
+# --- Speech-to-Text Setup ---
 print("Loading Whisper model...")
 whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
 print("Whisper model loaded.")
@@ -82,14 +86,18 @@ async def generate_response(transcript, session_id="default"):
         
         print(f"Generating response for: '{transcript}'")
         
+        # Use the agent with chat history
         response = await asyncio.to_thread(
             agent_with_chat_history.invoke,
             {"input": transcript},
             config={"configurable": {"session_id": session_id}}
         )
+
+        print(f"Time when LLM generated response: {time.perf_counter()}")
         
+        # Analyze emotion from the response
         emotion = await analyze_emotion(response["output"])
-        
+        print(f"Time when emotion was detected: {time.perf_counter()}")
         return response["output"], emotion
     except Exception as e:
         print(f"Error generating response: {e}")
@@ -117,7 +125,7 @@ async def analyze_emotion(text):
         
         emotion = emotion_response.content.strip().lower()
         
-    
+        # Validate emotion response
         valid_emotions = ["neutral", "happy", "sad", "excited"]
         if emotion in valid_emotions:
             print(f"Detected emotion: {emotion}")
@@ -130,18 +138,18 @@ async def analyze_emotion(text):
         print(f"Error analyzing emotion: {e}")
         return "neutral"
 
-
+# Audio recording parameters
 CHUNK = 512
 FORMAT = pyaudio.paInt16
 CHANNELS = 1
 RATE = 16000
 
+# VAD parameters
+VAD_THRESHOLD = 0.01  # RMS threshold for voice detection
+SILENCE_DURATION = 0.5  # Seconds of silence before stopping recording
+MIN_RECORDING_DURATION = 0.5  # Minimum recording duration in seconds
 
-VAD_THRESHOLD = 0.01  
-SILENCE_DURATION = 1.5  
-MIN_RECORDING_DURATION = 0.5  
-
-
+# Global variables for audio recording and processing
 is_recording = False
 audio_frames = []
 recording_thread = None
@@ -151,18 +159,19 @@ processing_queue = queue.Queue()
 vad_enabled = True
 auto_recording = False
 
-
+# Audio playback state tracking
 audio_playing = False
 audio_complete_event = asyncio.Event()
 
-
+# Rate limiting for TTS
 last_tts_time = 0
-TTS_RATE_LIMIT = 2.0  
+TTS_RATE_LIMIT = 2.0  # 2 seconds between TTS calls
+
 def calculate_rms(audio_data):
     """Calculate RMS (Root Mean Square) of audio data"""
     audio_np = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
     rms = np.sqrt(np.mean(audio_np**2))
-    return rms / 32768.0  
+    return rms / 32768.0  # Normalize to 0-1 range
 
 def record_audio_manual():
     """Function to record audio manually (spacebar controlled)"""
@@ -178,7 +187,6 @@ def record_audio_manual():
                         frames_per_buffer=CHUNK)
         
         print("Recording audio from laptop microphone...")
-        print(time.time())
         audio_frames = []
         is_recording = True
         
@@ -187,12 +195,11 @@ def record_audio_manual():
             audio_frames.append(data)
         
         print("Recording stopped")
-        print(time.time())
         stream.stop_stream()
         stream.close()
         p.terminate()
         
-      
+        # Save the recorded data as a WAV file
         filename = f"recorded_audio_{int(time.time())}.wav"
         wf = wave.open(filename, 'wb')
         wf.setnchannels(CHANNELS)
@@ -202,7 +209,6 @@ def record_audio_manual():
         wf.close()
         
         print(f"Audio saved as {filename}")
-        print(time.time())
         return filename
     except Exception as e:
         print(f"Error during audio recording: {e}")
@@ -228,7 +234,7 @@ def record_audio_vad():
         silence_start = None
         recording_start = None
         
-      
+        # Send listening status to ESP32
         if websocket_connection:
             asyncio.run_coroutine_threadsafe(
                 websocket_connection.send(json.dumps({"type": "status", "value": "listening"})),
@@ -240,13 +246,13 @@ def record_audio_vad():
             rms = calculate_rms(data)
             
             if rms > VAD_THRESHOLD:
-              
+                # Voice detected
                 if not is_recording:
                     print("Voice detected! Starting recording...")
                     is_recording = True
                     recording_start = time.time()
                     audio_frames = []
-                 
+                    # Send recording status to ESP32
                     if websocket_connection:
                         asyncio.run_coroutine_threadsafe(
                             websocket_connection.send(json.dumps({"type": "status", "value": "recording"})),
@@ -257,18 +263,21 @@ def record_audio_vad():
                 audio_frames.append(data)
                 
             else:
-
+                # Silence detected
                 if is_recording:
                     audio_frames.append(data)
                     
                     if silence_start is None:
                         silence_start = time.time()
                     
+                    # Check if silence duration exceeded threshold
                     if time.time() - silence_start > SILENCE_DURATION:
+                        # Check minimum recording duration
                         if recording_start and (time.time() - recording_start) > MIN_RECORDING_DURATION:
                             print("Silence detected, stopping recording")
                             is_recording = False
                             
+                            # Save and process the audio
                             filename = f"recorded_audio_{int(time.time())}.wav"
                             wf = wave.open(filename, 'wb')
                             wf.setnchannels(CHANNELS)
@@ -279,25 +288,30 @@ def record_audio_vad():
                             
                             print(f"Audio saved as {filename}")
                             
+                            # Queue processing
                             if event_loop and not event_loop.is_closed():
                                 asyncio.run_coroutine_threadsafe(process_audio_file(filename), event_loop)
                             
+                            # Reset for next recording
                             audio_frames = []
                             silence_start = None
                             recording_start = None
                             
+                            # Send listening status back to ESP32
                             if websocket_connection:
                                 asyncio.run_coroutine_threadsafe(
                                     websocket_connection.send(json.dumps({"type": "status", "value": "listening"})),
                                     event_loop
                                 )
                         else:
+                            # Too short, continue recording
                             silence_start = None
         
         stream.stop_stream()
         stream.close()
         p.terminate()
         
+        # Send idle status to ESP32
         if websocket_connection:
             asyncio.run_coroutine_threadsafe(
                 websocket_connection.send(json.dumps({"type": "status", "value": "idle"})),
@@ -312,10 +326,11 @@ async def process_recorded_audio():
     """Process the latest recorded audio file (manual mode)"""
     global websocket_connection
     
-    # if not websocket_connection:
-    #     print("No ESP32 connected")
-    #     return
+    if not websocket_connection:
+        print("No ESP32 connected")
+        return
     
+    # Find the latest recorded file
     latest_file = None
     latest_time = 0
     for file in os.listdir('.'):
@@ -334,16 +349,18 @@ async def process_audio_file(filename):
     """Process a specific audio file"""
     global websocket_connection
     
-    # if not websocket_connection:
-    #     print("No ESP32 connected")
-    #     return
+    if not websocket_connection:
+        print("No ESP32 connected")
+        return
     
     print(f"Processing audio file: {filename}")
-    print(time.time())
     
+    # Transcribe the audio
     transcript = await transcribe_audio(filename)
+    print(f"Time when audio transcribed: {time.perf_counter()}")
     
     if transcript:
+        # Check for special commands
         transcript_lower = transcript.lower()
         
         if "party mode" in transcript_lower or "party time" in transcript_lower:
@@ -357,24 +374,24 @@ async def process_audio_file(filename):
             response = "Okay, back to normal!"
             emotion = "neutral"
         else:
+            # Generate response using LLM and analyze emotion
             response, emotion = await generate_response(transcript)
+
             print(f"Generated response: {response}")
             print(f"Emotion: {emotion}")
         
+        # Send emotion to ESP32
         await websocket_connection.send(json.dumps({"type": "emotion", "value": emotion}))
         
-<<<<<<< HEAD
         # Wait for previous audio to finish before sending new one
-        # await speak_to_esp32_with_rate_limit(response, websocket_connection)
-=======
         await speak_to_esp32_with_rate_limit(response, websocket_connection)
->>>>>>> 103fcb4d423022712db4d7a5b60d54334d250e8e
     else:
         response = "I didn't catch that. Could you please repeat?"
         emotion = "neutral"
         await websocket_connection.send(json.dumps({"type": "emotion", "value": emotion}))
-        # await speak_to_esp32_with_rate_limit(response, websocket_connection)
+        await speak_to_esp32_with_rate_limit(response, websocket_connection)
     
+    # Clean up the audio file
     try:
         os.remove(filename)
         print(f"Cleaned up {filename}")
@@ -398,29 +415,35 @@ def stop_recording():
     if is_recording:
         print("Stopping manual recording...")
         is_recording = False
+        # Wait for recording thread to finish
         if recording_thread:
             recording_thread.join()
         
+        # Queue the processing task for the event loop
         if event_loop and not event_loop.is_closed():
             asyncio.run_coroutine_threadsafe(process_recorded_audio(), event_loop)
+            print(f"Time when audio processing finished:{time.perf_counter()}")
 
 def toggle_vad_mode():
     """Toggle between manual and VAD recording modes"""
     global auto_recording, vad_enabled, recording_thread
     
     if auto_recording:
+        # Stop VAD mode
         print("Switching to manual mode (spacebar)")
         auto_recording = False
         vad_enabled = False
         if recording_thread and recording_thread.is_alive():
             recording_thread.join()
     else:
+        # Start VAD mode
         print("Switching to VAD mode (automatic)")
         auto_recording = True
         vad_enabled = True
         recording_thread = threading.Thread(target=record_audio_vad)
         recording_thread.start()
 
+# Keyboard listener for spacebar and toggle
 def on_key_event(event):
     """Handle keyboard events"""
     if event.name == 'space' and not auto_recording:
@@ -428,34 +451,26 @@ def on_key_event(event):
             start_recording()
         elif event.event_type == keyboard.KEY_UP:
             stop_recording()
+            print(f"Time when recording stoped: {time.perf_counter()}")
     elif event.name == 'v' and event.event_type == keyboard.KEY_DOWN:
         toggle_vad_mode()
 
-<<<<<<< HEAD
 # --- TTS to ESP32 with Rate Limiting ---
-# # async def speak_to_esp32_with_rate_limit(text: str, websocket) -> str:
-#     """Send TTS to ESP32 with rate limiting to avoid 429 errors"""
-#     global last_tts_time
-    
-#     # Check rate limit
-#     current_time = time.time()
-#     time_since_last = current_time - last_tts_time
-=======
 async def speak_to_esp32_with_rate_limit(text: str, websocket) -> str:
     """Send TTS to ESP32 with rate limiting to avoid 429 errors"""
     global last_tts_time
     
+    # Check rate limit
     current_time = time.time()
     time_since_last = current_time - last_tts_time
->>>>>>> 103fcb4d423022712db4d7a5b60d54334d250e8e
     
-#     if time_since_last < TTS_RATE_LIMIT:
-#         wait_time = TTS_RATE_LIMIT - time_since_last
-#         print(f"Rate limiting: waiting {wait_time:.1f} seconds...")
-#         await asyncio.sleep(wait_time)
+    if time_since_last < TTS_RATE_LIMIT:
+        wait_time = TTS_RATE_LIMIT - time_since_last
+        print(f"Rate limiting: waiting {wait_time:.1f} seconds...")
+        await asyncio.sleep(wait_time)
     
-#     last_tts_time = time.time()
-#     return await speak_to_esp32(text, websocket)
+    last_tts_time = time.time()
+    return await speak_to_esp32(text, websocket)
 
 async def speak_to_esp32(text: str, websocket) -> str:
     global audio_playing, audio_complete_event
@@ -467,6 +482,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
         print("DEEPGRAM_API_KEY not found in environment variables")
         return "API key missing"
     
+    # OPTIMIZED DEEPGRAM SETTINGS for ESP32
     DEEPGRAM_URL = "https://api.deepgram.com/v1/speak?model=aura-2-aurora-en&encoding=linear16&sample_rate=16000&container=none"
     headers = {
         "Authorization": f"Token {DG_API_KEY}",
@@ -476,7 +492,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
     
     try:
         print("Connecting to Deepgram API...")
-        print(time.time())
+        print(f"Time when starting Deepgram: {time.perf_counter()}")
         
         connector = aiohttp.TCPConnector(
             limit=10,
@@ -492,7 +508,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
             async with session.post(DEEPGRAM_URL, headers=headers, json=payload) as response:
                 if response.status == 429:
                     print("Rate limited by Deepgram. Waiting longer...")
-                    print(time.time())
+                    
                     await asyncio.sleep(2)
                     return "Rate limited"
                 
@@ -501,9 +517,11 @@ async def speak_to_esp32(text: str, websocket) -> str:
                 content_length = int(response.headers.get('content-length', 0))
                 print(f"Expected audio size: {content_length} bytes")
                 
+                # Mark audio as starting
                 audio_playing = True
                 audio_complete_event.clear()
                 
+                # Signal start of audio
                 try:
                     start_message = {
                         "audio": True,
@@ -512,33 +530,27 @@ async def speak_to_esp32(text: str, websocket) -> str:
                     }
                     await websocket.send(json.dumps(start_message))
                     print("Sent audio start signal to ESP32")
-                    print(time.time())
-                    
-                    await asyncio.sleep(0.3)  
+                    await asyncio.sleep(0.3)  # Give ESP32 time to prepare
                     
                 except (websockets.exceptions.ConnectionClosed, OSError) as e:
                     print(f"WebSocket closed, cannot send audio: {e}")
                     audio_playing = False
                     return "WebSocket closed"
                 
-<<<<<<< HEAD
                 # Stream audio with optimized chunking
                 print("Streaming audio to ESP32...")
-                print(time.time())              
+                print(f"Time when audio started streaming: {time.perf_counter()}")
+                              
                 bytes_sent = 0
                 chunk_size = 8192  # Optimized chunk size
-=======
-                print("Streaming audio to ESP32...")              
-                bytes_sent = 0
-                chunk_size = 4096  
->>>>>>> 103fcb4d423022712db4d7a5b60d54334d250e8e
                 chunk_duration = chunk_size / BYTES_PER_SECOND
                 async for chunk in response.content.iter_chunked(chunk_size):
                     try:
                         await websocket.send(chunk)
                         bytes_sent += len(chunk)
-                        print(time.time())
+                        
                         await asyncio.sleep(chunk_duration * 0.8)
+                        # Progress tracking (less frequent)
                         if content_length > 0 and bytes_sent % 8192 == 0:
                             progress = (bytes_sent / content_length) * 100
                             print(f"Progress: {progress:.1f}%")
@@ -549,8 +561,9 @@ async def speak_to_esp32(text: str, websocket) -> str:
                         return "WebSocket closed during streaming"
                 
                 print(f"Total bytes sent: {bytes_sent}")
-                print(time.time())
                 
+                
+                # Signal end of audio
                 try:
                     end_message = {
                         "audio": True,
@@ -559,7 +572,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
                     }
                     await websocket.send(json.dumps(end_message))
                     print("Sent audio end signal to ESP32")
-                    print(time.time())
+                    print(f"Time when finished streaming audio: {time.perf_counter()}")
                     
                     await asyncio.sleep(0.1)
                     
@@ -582,18 +595,22 @@ async def speak_to_esp32(text: str, websocket) -> str:
         return f"Error: {e}"
     
     print("Audio sent successfully to ESP32 - waiting for completion signal...")
+    # Note: audio_playing stays True until ESP32 confirms completion
     return "Audio sent successfully"
 
+# Global variables for WebSocket connection management
 active_connection = None
 connection_lock = asyncio.Lock()
 greeting_sent = False
 
+# --- WebSocket Connection Handler ---
 async def handle_connection(websocket):
     global active_connection, websocket_connection, greeting_sent, audio_playing
     
     print(f"ESP32 connected from {websocket.remote_address}")
     
     async with connection_lock:
+        # Close previous connection if it exists
         if active_connection and active_connection != websocket:
             try:
                 await active_connection.close()
@@ -603,9 +620,10 @@ async def handle_connection(websocket):
         
         active_connection = websocket
         websocket_connection = websocket
-        audio_playing = False  
+        audio_playing = False  # Reset audio state
     
     try:
+        # Send a welcome message to the ESP32
         welcome_msg = {
             "type": "welcome",
             "message": "Connected to Dino server",
@@ -618,23 +636,20 @@ async def handle_connection(websocket):
         await websocket.send(json.dumps(welcome_msg))
         print("Sent welcome message with audio config to ESP32")
         
+        # Send initial greeting only once
         if not greeting_sent:
             if auto_recording:
                 greeting = "Hi there! I'm Dyno! I'm listening for your voice automatically!"
             else:
                 greeting = "Tell you what.... Forget Tariq this little slow turtle, I ship muuuuch faster, hahahahahahaha "
             
+            # Wait a moment for ESP32 to initialize
             await asyncio.sleep(1.5)
-<<<<<<< HEAD
-            print(time.time())
             # Send greeting
-            # await speak_to_esp32_with_rate_limit(greeting, websocket)
-=======
-            
             await speak_to_esp32_with_rate_limit(greeting, websocket)
->>>>>>> 103fcb4d423022712db4d7a5b60d54334d250e8e
             greeting_sent = True
         
+        # Message handling loop
         async for message in websocket:
             try:
                 if isinstance(message, str):
@@ -689,15 +704,18 @@ async def handle_connection(websocket):
                 audio_playing = False
                 print("Cleared active connection")
 
+# --- Main ---
 async def main():
     global event_loop
     event_loop = asyncio.get_running_loop()
     
     try:
+        # Get the actual IP address
         hostname = socket.gethostname()
         ip_address = socket.gethostbyname(hostname)
         print(f"Server will be accessible at ws://{ip_address}:8080")
         
+        # Set up keyboard listener
         print("Setting up keyboard listener...")
         print("INSTRUCTIONS:")
         print("   - Press 'V' to toggle between VAD mode and manual mode")
@@ -707,13 +725,14 @@ async def main():
         
         keyboard.hook(on_key_event)
         
+        # Start the server with optimized settings
         server_config = {
-            "ping_interval": 20,      
-            "ping_timeout": 10,       
-            "close_timeout": 10,      
-            "max_size": 10**7,        
-            "max_queue": 32,          
-            "compression": None       
+            "ping_interval": 20,      # Ping every 20 seconds
+            "ping_timeout": 10,       # Wait 10 seconds for pong
+            "close_timeout": 10,      # Close timeout
+            "max_size": 10**7,        # 10MB max message size for audio
+            "max_queue": 32,          # Max queue size
+            "compression": None       # Disable compression for audio
         }
         
         async with websockets.serve(handle_connection, "0.0.0.0", 8080, **server_config) as server:
@@ -724,15 +743,17 @@ async def main():
                 print("VAD mode active - automatic voice detection")
             else:
                 print("Manual mode active - Hold SPACEBAR to talk")
-            await asyncio.Future() 
+            await asyncio.Future()  # Run forever
             
     except Exception as e:
         print(f"Failed to start WebSocket server: {e}")
 
 if __name__ == "__main__":
+    # Create a directory for audio files if it doesn't exist
     if not os.path.exists("recordings"):
         os.makedirs("recordings")
     
+    # Change to the recordings directory
     os.chdir("recordings")
     print(f"Working directory: {os.getcwd()}")
     
