@@ -17,10 +17,10 @@
 
 // ========================== Pins & Config ==========================
 
-#define I2S_SPEAKER_BCLK 12   
+#define I2S_SPEAKER_BCLK 12 
 #define I2S_SPEAKER_LRC  14   
 #define I2S_SPEAKER_DIN  13   
-#define res 2
+
 
 // OLED SH1106 display setup
 #define SCREEN_WIDTH 128
@@ -35,14 +35,13 @@
 
 // LED pins for status indicator
 #define STATUS_LED  4      
-#define STATUS_LED2 12     
+   
 
 // WiFi credentials - UPDATE THESE
 const char* ssid = "Meshkat";
 const char* password = "TronicsHub";
 
-// WebSocket server details - UPDATE THIS IP
-const char* websocket_host = "192.168.1.23";  // Update with your laptop's IP
+const char* websocket_host = "192.168.1.17";  
 const int websocket_port = 8080;
 
 // IMPROVED I2S configuration for anti-crackling audio
@@ -402,38 +401,38 @@ void audioPlaybackTask(void* parameter) {
 #endif // USE_AUDIO
 
 // ========================== LED ==========================
-void updateStatusLED() {
-    unsigned long currentTime = millis();
-    switch (connectionStatus) {
-        case 0:
-            if (currentTime - lastBlinkTime >= 1000) {
-                ledState = !ledState;
-                digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
-                lastBlinkTime = currentTime;
-            }
-            break;
-        case 1:
-            if (currentTime - lastBlinkTime >= 500) {
-                ledState = !ledState;
-                digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
-                lastBlinkTime = currentTime;
-            }
-            break;
-        case 2:
-            if (serverStatus == "recording") {
-                digitalWrite(STATUS_LED, LOW);
-            } else if (serverStatus == "listening") {
-                if (currentTime - lastBlinkTime >= 2000) {
-                    ledState = !ledState;
-                    digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
-                    lastBlinkTime = currentTime;
-                }
-            } else {
-                digitalWrite(STATUS_LED, HIGH);
-            }
-            break;
-    }
-}
+// void updateStatusLED() {
+//     unsigned long currentTime = millis();
+//     switch (connectionStatus) {
+//         case 0:
+//             if (currentTime - lastBlinkTime >= 1000) {
+//                 ledState = !ledState;
+//                 digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
+//                 lastBlinkTime = currentTime;
+//             }
+//             break;
+//         case 1:
+//             if (currentTime - lastBlinkTime >= 500) {
+//                 ledState = !ledState;
+//                 digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
+//                 lastBlinkTime = currentTime;
+//             }
+//             break;
+//         case 2:
+//             if (serverStatus == "recording") {
+//                 digitalWrite(STATUS_LED, LOW);
+//             } else if (serverStatus == "listening") {
+//                 if (currentTime - lastBlinkTime >= 2000) {
+//                     ledState = !ledState;
+//                     digitalWrite(STATUS_LED, ledState ? LOW : HIGH);
+//                     lastBlinkTime = currentTime;
+//                 }
+//             } else {
+//                 digitalWrite(STATUS_LED, HIGH);
+//             }
+//             break;
+//     }
+// }
 
 // ========================== WiFi / WebSocket ==========================
 void handleEmotionChange(String newEmotion) {
@@ -590,7 +589,6 @@ void setup() {
     setCpuFrequencyMhz(240);
     debugPrint("=== ESP32-CAM Dino Toy Starting ===");
     debugPrint("CPU Frequency: " + String(getCpuFrequencyMhz()) + " MHz");
-    pinMode(res, OUTPUT);
     pinMode(STATUS_LED, OUTPUT);
     digitalWrite(STATUS_LED, HIGH); // OFF
 
@@ -636,10 +634,8 @@ void setup() {
 
 void loop() {
     webSocket.loop();
-    updateStatusLED();
+    // updateStatusLED();
 
-    digitalWrite(res, 1);
-    digitalWrite(res, 0);
 
 
     if (WiFi.status() != WL_CONNECTED) {
