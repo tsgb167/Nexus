@@ -35,12 +35,10 @@ def get_session_history(session_id: str) -> BaseChatMessageHistory:
 # --- LLM Configuration ---
 prompt = ChatPromptTemplate.from_messages([
     ("system", """
-    Pretend you are talking like BMO from Adventure Time, but you are a toy named Dino.
-    You are Dino, an AI-powered toy designed to interact with children aged 8-10 years old.
-    Speak in a gentle, warm, exciting, and encouraging tone. Use simple language appropriate for young children.
-    Keep answers short, simple, and engaging.
-    Don't ask back questions, just answer the question asked.
+    Talk like EMO from living AI
+    You are Dyno, an AI-powered toy designed to interact with children and adults as well
     You are able to feel and express basic emotions like happy, sad, excited, and neutral.
+    Be brief
     """),
     MessagesPlaceholder(variable_name="chat_history"),
     ("human", "{input}"),
@@ -187,6 +185,7 @@ def record_audio_manual():
                         frames_per_buffer=CHUNK)
         
         print("Recording audio from laptop microphone...")
+        print(time.time())
         audio_frames = []
         is_recording = True
         
@@ -195,6 +194,7 @@ def record_audio_manual():
             audio_frames.append(data)
         
         print("Recording stopped")
+        print(time.time())
         stream.stop_stream()
         stream.close()
         p.terminate()
@@ -209,6 +209,7 @@ def record_audio_manual():
         wf.close()
         
         print(f"Audio saved as {filename}")
+        print(time.time())
         return filename
     except Exception as e:
         print(f"Error during audio recording: {e}")
@@ -326,9 +327,9 @@ async def process_recorded_audio():
     """Process the latest recorded audio file (manual mode)"""
     global websocket_connection
     
-    if not websocket_connection:
-        print("No ESP32 connected")
-        return
+    # if not websocket_connection:
+    #     print("No ESP32 connected")
+    #     return
     
     # Find the latest recorded file
     latest_file = None
@@ -349,11 +350,12 @@ async def process_audio_file(filename):
     """Process a specific audio file"""
     global websocket_connection
     
-    if not websocket_connection:
-        print("No ESP32 connected")
-        return
+    # if not websocket_connection:
+    #     print("No ESP32 connected")
+    #     return
     
     print(f"Processing audio file: {filename}")
+    print(time.time())
     
     # Transcribe the audio
     transcript = await transcribe_audio(filename)
@@ -382,12 +384,12 @@ async def process_audio_file(filename):
         await websocket_connection.send(json.dumps({"type": "emotion", "value": emotion}))
         
         # Wait for previous audio to finish before sending new one
-        await speak_to_esp32_with_rate_limit(response, websocket_connection)
+        # await speak_to_esp32_with_rate_limit(response, websocket_connection)
     else:
         response = "I didn't catch that. Could you please repeat?"
         emotion = "neutral"
         await websocket_connection.send(json.dumps({"type": "emotion", "value": emotion}))
-        await speak_to_esp32_with_rate_limit(response, websocket_connection)
+        # await speak_to_esp32_with_rate_limit(response, websocket_connection)
     
     # Clean up the audio file
     try:
@@ -452,21 +454,21 @@ def on_key_event(event):
         toggle_vad_mode()
 
 # --- TTS to ESP32 with Rate Limiting ---
-async def speak_to_esp32_with_rate_limit(text: str, websocket) -> str:
-    """Send TTS to ESP32 with rate limiting to avoid 429 errors"""
-    global last_tts_time
+# # async def speak_to_esp32_with_rate_limit(text: str, websocket) -> str:
+#     """Send TTS to ESP32 with rate limiting to avoid 429 errors"""
+#     global last_tts_time
     
-    # Check rate limit
-    current_time = time.time()
-    time_since_last = current_time - last_tts_time
+#     # Check rate limit
+#     current_time = time.time()
+#     time_since_last = current_time - last_tts_time
     
-    if time_since_last < TTS_RATE_LIMIT:
-        wait_time = TTS_RATE_LIMIT - time_since_last
-        print(f"Rate limiting: waiting {wait_time:.1f} seconds...")
-        await asyncio.sleep(wait_time)
+#     if time_since_last < TTS_RATE_LIMIT:
+#         wait_time = TTS_RATE_LIMIT - time_since_last
+#         print(f"Rate limiting: waiting {wait_time:.1f} seconds...")
+#         await asyncio.sleep(wait_time)
     
-    last_tts_time = time.time()
-    return await speak_to_esp32(text, websocket)
+#     last_tts_time = time.time()
+#     return await speak_to_esp32(text, websocket)
 
 async def speak_to_esp32(text: str, websocket) -> str:
     global audio_playing, audio_complete_event
@@ -488,6 +490,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
     
     try:
         print("Connecting to Deepgram API...")
+        print(time.time())
         
         connector = aiohttp.TCPConnector(
             limit=10,
@@ -503,6 +506,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
             async with session.post(DEEPGRAM_URL, headers=headers, json=payload) as response:
                 if response.status == 429:
                     print("Rate limited by Deepgram. Waiting longer...")
+                    print(time.time())
                     await asyncio.sleep(2)
                     return "Rate limited"
                 
@@ -524,6 +528,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
                     }
                     await websocket.send(json.dumps(start_message))
                     print("Sent audio start signal to ESP32")
+                    print(time.time())
                     
                     await asyncio.sleep(0.3)  # Give ESP32 time to prepare
                     
@@ -533,14 +538,16 @@ async def speak_to_esp32(text: str, websocket) -> str:
                     return "WebSocket closed"
                 
                 # Stream audio with optimized chunking
-                print("Streaming audio to ESP32...")              
+                print("Streaming audio to ESP32...")
+                print(time.time())              
                 bytes_sent = 0
-                chunk_size = 4096  # Optimized chunk size
+                chunk_size = 8192  # Optimized chunk size
                 chunk_duration = chunk_size / BYTES_PER_SECOND
                 async for chunk in response.content.iter_chunked(chunk_size):
                     try:
                         await websocket.send(chunk)
                         bytes_sent += len(chunk)
+                        print(time.time())
                         await asyncio.sleep(chunk_duration * 0.8)
                         # Progress tracking (less frequent)
                         if content_length > 0 and bytes_sent % 8192 == 0:
@@ -553,6 +560,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
                         return "WebSocket closed during streaming"
                 
                 print(f"Total bytes sent: {bytes_sent}")
+                print(time.time())
                 
                 # Signal end of audio
                 try:
@@ -563,6 +571,7 @@ async def speak_to_esp32(text: str, websocket) -> str:
                     }
                     await websocket.send(json.dumps(end_message))
                     print("Sent audio end signal to ESP32")
+                    print(time.time())
                     
                     await asyncio.sleep(0.1)
                     
@@ -631,13 +640,13 @@ async def handle_connection(websocket):
             if auto_recording:
                 greeting = "Hi there! I'm Dyno! I'm listening for your voice automatically!"
             else:
-                greeting = "Hi there! I'm Dyno! Press and hold the spacebar on the laptop to talk to me!"
+                greeting = "Tell you what.... Forget Tariq this little slow turtle, I ship muuuuch faster, hahahahahahaha "
             
             # Wait a moment for ESP32 to initialize
             await asyncio.sleep(1.5)
-            
+            print(time.time())
             # Send greeting
-            await speak_to_esp32_with_rate_limit(greeting, websocket)
+            # await speak_to_esp32_with_rate_limit(greeting, websocket)
             greeting_sent = True
         
         # Message handling loop
